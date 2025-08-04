@@ -3,6 +3,8 @@ package org.aitest.ai_counsel.service;
 import lombok.Getter;
 import lombok.RequiredArgsConstructor;
 import org.aitest.ai_counsel.domain.Counsel;
+import org.aitest.ai_counsel.exception.AnalysisException;
+import org.aitest.ai_counsel.exception.InvalidRequestException;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
@@ -19,21 +21,40 @@ public class CounselPredictionService {
      * 과거 상담 내역을 기반으로 다음 상담을 예측합니다.
      */
     public PredictionResult predictNextCounsel(List<Counsel> counselHistory) {
-        if (counselHistory == null || counselHistory.isEmpty()) {
-            return new PredictionResult("예측 불가", "상담 이력이 없음", Collections.emptyMap());
-        }
+        return Optional.ofNullable(counselHistory)
+                .filter(history -> !history.isEmpty())
+                .map(history -> {
+                    try {
+                        // 1. 상담 패턴 분석
+                        Map<String, Integer> typeFrequency = analyzeTypeFrequency(history);
 
-        // 1. 상담 패턴 분석
-        Map<String, Integer> typeFrequency = analyzeTypeFrequency(counselHistory);
+                        // 2. 주요 키워드 분석
+                        Map<String, Integer> keywordFrequency = analyzeKeywordFrequency(history);
 
-        // 2. 주요 키워드 분석
-        Map<String, Integer> keywordFrequency = analyzeKeywordFrequency(counselHistory);
+                        // 3. 상담 주기 분석
+                        double averageCycle = calculateAverageCycle(history);
 
-        // 3. 상담 주기 분석
-        double avgInterval = analyzeConsultationInterval(counselHistory);
+                        // 4. 예측 결과 생성
+                        String predictedType = predictMostLikelyType(typeFrequency);
+                        String details = generatePredictionDetails(typeFrequency, averageCycle, history.size());
 
-        // 4. 예측 결과 생성
-        return generatePrediction(typeFrequency, keywordFrequency, avgInterval);
+                        // 상위 5개 키워드만 반환
+                        Map<String, Integer> topKeywords = keywordFrequency.entrySet().stream()
+                                .sorted(Map.Entry.<String, Integer>comparingByValue().reversed())
+                                .limit(5)
+                                .collect(Collectors.toMap(
+                                        Map.Entry::getKey,
+                                        Map.Entry::getValue,
+                                        (e1, e2) -> e1,
+                                        LinkedHashMap::new
+                                ));
+
+                        return new PredictionResult(predictedType, details, topKeywords);
+                    } catch (Exception e) {
+                        throw new AnalysisException("상담 예측 처리 중 오류가 발생했습니다: " + e.getMessage(), e);
+                    }
+                })
+                .orElseThrow(() -> new InvalidRequestException("예측을 위한 상담 이력이 없습니다."));
     }
 
     /**
@@ -42,13 +63,12 @@ public class CounselPredictionService {
     private Map<String, Integer> analyzeTypeFrequency(List<Counsel> counselHistory) {
         Map<String, Integer> typeFrequency = new HashMap<>();
 
-        for (Counsel counsel : counselHistory) {
-            String analysis = counsel.getAnalysis();
-            if (analysis != null && analysis.contains("상담 유형:")) {
-                String type = analysis.split("\n")[0].replace("상담 유형: ", "").trim();
-                typeFrequency.merge(type, 1, Integer::sum);
-            }
-        }
+        counselHistory.forEach(counsel ->
+            Optional.ofNullable(counsel.getAnalysis())
+                .filter(analysis -> analysis.contains("상담 유형:"))
+                .map(analysis -> analysis.split("\n")[0].replace("상담 유형: ", "").trim())
+                .ifPresent(type -> typeFrequency.merge(type, 1, Integer::sum))
+        );
 
         return typeFrequency;
     }
@@ -59,18 +79,16 @@ public class CounselPredictionService {
     private Map<String, Integer> analyzeKeywordFrequency(List<Counsel> counselHistory) {
         Map<String, Integer> keywordFrequency = new HashMap<>();
 
-        for (Counsel counsel : counselHistory) {
-            String analysis = counsel.getAnalysis();
-            if (analysis != null && analysis.contains("주요 키워드:")) {
-                String[] keywords = analysis.split("\n")[2]
-                    .replace("주요 키워드: ", "")
-                    .split(", ");
-
-                for (String keyword : keywords) {
-                    keywordFrequency.merge(keyword.trim(), 1, Integer::sum);
-                }
-            }
-        }
+        counselHistory.forEach(counsel ->
+            Optional.ofNullable(counsel.getAnalysis())
+                .filter(analysis -> analysis.contains("주요 키워드:"))
+                .map(analysis -> analysis.split("\n")[2].replace("주요 키워드: ", "").split(", "))
+                .ifPresent(keywords -> {
+                    for (String keyword : keywords) {
+                        keywordFrequency.merge(keyword.trim(), 1, Integer::sum);
+                    }
+                })
+        );
 
         return keywordFrequency;
     }
@@ -78,7 +96,7 @@ public class CounselPredictionService {
     /**
      * 상담 간격을 분석합니다.
      */
-    private double analyzeConsultationInterval(List<Counsel> counselHistory) {
+    private double calculateAverageCycle(List<Counsel> counselHistory) {
         if (counselHistory.size() < 2) {
             return 0.0;
         }
@@ -94,39 +112,30 @@ public class CounselPredictionService {
     }
 
     /**
-     * 분석 결과를 바탕으로 예측 결과를 생성합니다.
+     * 가장 가능성이 높은 상담 유형을 예측합니다.
      */
-    private PredictionResult generatePrediction(
-            Map<String, Integer> typeFrequency,
-            Map<String, Integer> keywordFrequency,
-            double avgInterval) {
-
-        // 가장 빈번한 상담 유형 찾기
-        String mostFrequentType = typeFrequency.entrySet().stream()
+    private String predictMostLikelyType(Map<String, Integer> typeFrequency) {
+        return typeFrequency.entrySet().stream()
                 .max(Map.Entry.comparingByValue())
                 .map(Map.Entry::getKey)
                 .orElse("일반상담");
+    }
 
-        // 주요 키워드 상위 5개 추출
-        Map<String, Integer> topKeywords = keywordFrequency.entrySet().stream()
-                .sorted(Map.Entry.<String, Integer>comparingByValue().reversed())
-                .limit(5)
-                .collect(Collectors.toMap(
-                    Map.Entry::getKey,
-                    Map.Entry::getValue,
-                    (e1, e2) -> e1,
-                    LinkedHashMap::new
-                ));
+    /**
+     * 예측 세부 정보를 생성합니다.
+     */
+    private String generatePredictionDetails(Map<String, Integer> typeFrequency, double averageCycle, int historySize) {
+        StringBuilder details = new StringBuilder();
+        details.append(String.format("상담 주기: %.1f일\n", averageCycle));
 
-        // 예측 메시지 생성
-        String predictionType = String.format("다음 상담 예상 유형: %s", mostFrequentType);
-        String predictionDetail = String.format(
-            "예상 상담 주기: %.1f일\n주요 예상 키워드: %s",
-            avgInterval,
-            String.join(", ", topKeywords.keySet())
-        );
+        // 상담 유형에 따른 세부 정보 추가
+        for (Map.Entry<String, Integer> entry : typeFrequency.entrySet()) {
+            String type = entry.getKey();
+            Integer count = entry.getValue();
+            details.append(String.format(" - %s: %d회\n", type, count));
+        }
 
-        return new PredictionResult(predictionType, predictionDetail, topKeywords);
+        return details.toString();
     }
 
     @Getter

@@ -6,6 +6,8 @@ import kr.co.shineware.nlp.komoran.model.KomoranResult;
 import lombok.Getter;
 import lombok.RequiredArgsConstructor;
 import org.aitest.ai_counsel.domain.Counsel;
+import org.aitest.ai_counsel.exception.AnalysisException;
+import org.aitest.ai_counsel.exception.InvalidRequestException;
 import org.springframework.stereotype.Service;
 
 import java.util.*;
@@ -30,24 +32,57 @@ public class CounselAnalysisService {
      * 상담 내용을 분석하여 결과를 반환합니다.
      */
     public AnalysisResult analyzeCounsel(Counsel counsel) {
-        String content = counsel.getContent();
+        return Optional.ofNullable(counsel)
+                .map(c -> {
+                    // 상담 내용 검증
+                    String content = Optional.ofNullable(c.getContent())
+                            .filter(text -> !text.trim().isEmpty())
+                            .orElseThrow(() -> new InvalidRequestException("분석할 상담 내용이 비어있습니다."));
 
-        // 형태소 분석을 통한 키워드 추출
-        List<String> keywords = extractKeywords(content);
+                    try {
+                        // 키워드 추출
+                        List<String> keywords = extractKeywords(content);
 
-        // 상담 유형 분류
-        String counselType = classifyCounselType(content, keywords);
+                        // 감정 분석
+                        String sentiment = analyzeSentiment(content);
 
-        // 감정 분석
-        String sentiment = analyzeSentiment(content, keywords);
+                        // 상담 유형 분류
+                        String counselType = classifyCounselType(content);
 
-        return new AnalysisResult(keywords, counselType, sentiment);
+                        return new AnalysisResult(keywords, sentiment, counselType);
+                    } catch (Exception e) {
+                        throw new AnalysisException("상담 내용 분석 중 오류가 발생했습니다: " + e.getMessage(), e);
+                    }
+                })
+                .orElseThrow(() -> new InvalidRequestException("분석할 상담 정보가 누락되었습니다."));
     }
 
     /**
-     * 키워드를 기반으로 상담 유형을 분류합니다.
+     * 키워드를 추출합니다.
      */
-    private String classifyCounselType(String content, List<String> keywords) {
+    private List<String> extractKeywords(String content) {
+        try {
+            return Optional.ofNullable(content)
+                    .map(text -> {
+                        KomoranResult result = komoran.analyze(text);
+                        return result.getTokenList().stream()
+                                .filter(token -> token.getPos().matches("NN.*|VV.*|VA.*")) // 명사, 동사, 형용사만
+                                .map(token -> token.getMorph())
+                                .filter(word -> word.length() > 1) // 단일 문자 제외
+                                .distinct()
+                                .limit(10)
+                                .collect(Collectors.toList());
+                    })
+                    .orElse(Collections.emptyList());
+        } catch (Exception e) {
+            throw new AnalysisException("키워드 추출 중 오류가 발생했습니다.", e);
+        }
+    }
+
+    /**
+     * 상담 유형을 분류합니다.
+     */
+    private String classifyCounselType(String content) {
         // 최소 점수 임계값
         final int THRESHOLD = 2;
         
@@ -61,12 +96,12 @@ public class CounselAnalysisService {
         }
         
         // 2. 키워드 기반 점수 계산
-        for (String keyword : keywords) {
+        for (String keyword : extractKeywords(content)) {
             // 상품문의 관련 키워드 점수는 1점만 부여
             if (Arrays.asList("상품", "펀드", "수익률", "이율", "금리", "주식", "채권").contains(keyword)) {
                 typeScores.merge("상품문의", 1, Integer::sum);
             }
-            // 다른 ��형은 2점 부여
+            // 다른 형은 2점 부여
             else if (Arrays.asList("불만", "불편", "민원", "항의", "문제").contains(keyword)) {
                 typeScores.merge("불만접수", 2, Integer::sum);
             }
@@ -94,50 +129,9 @@ public class CounselAnalysisService {
     }
 
     /**
-     * KOMORAN 형태소 분석기를 사용하여 주요 키워드를 추출합니다.
-     */
-    private List<String> extractKeywords(String content) {
-        if (content == null || content.trim().isEmpty()) {
-            return Collections.emptyList();
-        }
-
-        KomoranResult analyzeResult = komoran.analyze(content);
-        Set<String> keywords = new HashSet<>();
-        
-        // 1. 기본 명사 추출
-        List<String> nouns = analyzeResult.getNouns();
-        
-        // 2. 복합 명사 처리
-        for (String noun : nouns) {
-            // 불용어 필터링
-            if (noun.length() <= 1 || Arrays.asList("것", "수", "등", "점", "분", "글", "말", "때", "내", "중").contains(noun)) {
-                continue;
-            }
-            
-            // 복합 명사 처리
-            if (noun.equals("주식형펀드")) {
-                keywords.add("주식형");
-                keywords.add("펀드");
-            } else if (noun.endsWith("형") && noun.length() > 2) {
-                keywords.add(noun); // "주식형" 전체를 키워드로 추가
-            } else if (!noun.equals("형")) { // "형"이라는 단어 자체는 제외
-                keywords.add(noun);
-            }
-        }
-        
-        // 3. 특수 패턴 처리
-        if (content.contains("주식형 펀드")) {
-            keywords.add("주식형");
-            keywords.add("펀드");
-        }
-        
-        return new ArrayList<>(keywords);
-    }
-
-    /**
      * 키워드를 기반으로 간단한 감정 분석을 수행합니다.
      */
-    private String analyzeSentiment(String content, List<String> keywords) {
+    private String analyzeSentiment(String content) {
         int positiveScore = 0;
         int negativeScore = 0;
 
@@ -148,10 +142,10 @@ public class CounselAnalysisService {
 
         // 부정 키워드
         List<String> negativeWords = Arrays.asList(
-            "나쁘", "불만", "불편", "문제", "해지", "철회", "불안", "손실"
+            "나쁘", "불만", "불편", "문제", "해지", "철회", "불안", "손해"
         );
 
-        for (String keyword : keywords) {
+        for (String keyword : extractKeywords(content)) {
             if (positiveWords.stream().anyMatch(keyword::contains)) {
                 positiveScore++;
             }

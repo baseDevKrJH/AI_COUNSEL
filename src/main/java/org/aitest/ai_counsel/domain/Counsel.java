@@ -16,6 +16,9 @@ public class Counsel {
     @Column(nullable = false)
     private String counselorId;
 
+    @Column(nullable = false)
+    private String customerId;
+
     @Column(nullable = false, length = 1000)
     private String content;
 
@@ -31,7 +34,7 @@ public class Counsel {
     private String prediction;
 
     private LocalDateTime createdAt;
-    private LocalDateTime updatedAt;
+    private LocalDateTime modifiedAt;
 
     @PrePersist
     protected void onCreate() {
@@ -40,6 +43,6 @@ public class Counsel {
 
     @PreUpdate
     protected void onUpdate() {
-        updatedAt = LocalDateTime.now();
+        modifiedAt = LocalDateTime.now();
     }
 }
