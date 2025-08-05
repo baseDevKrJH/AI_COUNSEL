@@ -1,5 +1,7 @@
 package org.aitest.ai_counsel.service;
 
+import com.theokanning.openai.completion.CompletionRequest;
+import com.theokanning.openai.service.OpenAiService;
 import kr.co.shineware.nlp.komoran.constant.DEFAULT_MODEL;
 import kr.co.shineware.nlp.komoran.core.Komoran;
 import kr.co.shineware.nlp.komoran.model.KomoranResult;
@@ -8,8 +10,11 @@ import lombok.RequiredArgsConstructor;
 import org.aitest.ai_counsel.domain.Counsel;
 import org.aitest.ai_counsel.exception.AnalysisException;
 import org.aitest.ai_counsel.exception.InvalidRequestException;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import jakarta.annotation.PostConstruct;
+import java.time.Duration;
 import java.util.*;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -19,17 +24,29 @@ import java.util.stream.Stream;
 public class CounselAnalysisService {
 
     private final Komoran komoran = new Komoran(DEFAULT_MODEL.FULL);
+    private OpenAiService openAiService;
+
+    @Value("${openai.api.key}")
+    private String openaiApiKey;
+
+    @PostConstruct
+    private void init() {
+        // API 키가 유효한 경우에만 OpenAiService를 초기화합니다.
+        if (openaiApiKey != null && !openaiApiKey.isEmpty() && !openaiApiKey.equals("YOUR_OPENAI_API_KEY")) {
+            this.openAiService = new OpenAiService(openaiApiKey, Duration.ofSeconds(60));
+        }
+    }
 
     private static final Map<String, String> COUNSEL_TYPES = Map.of(
         "상품문의", "상품의 특성, 가격, 조건 등에 대한 문의",
-        "불만접수", "서비스나 상품에 대한 불만 제기",
+        "불만���수", "서비스나 상품에 대한 불만 제기",
         "정보변경", "고객 정보 변경 요청",
         "해지요청", "서비스 해지나 계약 종료 요청",
         "일반상담", "기타 일반적인 문의사항"
     );
 
     /**
-     * 상담 내용을 분석하여 결과를 반환합니다.
+     * 상담 내용을 분석하여 결과�� 반환합니다.
      */
     public AnalysisResult analyzeCounsel(Counsel counsel) {
         return Optional.ofNullable(counsel)
@@ -75,7 +92,7 @@ public class CounselAnalysisService {
                     })
                     .orElse(Collections.emptyList());
         } catch (Exception e) {
-            throw new AnalysisException("키워드 추출 중 오류가 발생했습니다.", e);
+            throw new AnalysisException("키��드 추출 중 오류가 발생했습니다.", e);
         }
     }
 
@@ -129,9 +146,47 @@ public class CounselAnalysisService {
     }
 
     /**
-     * 키워드를 기반으로 간단한 감정 분석을 수행합니다.
+     * OpenAI API를 사용하여 감정 분석을 수행합니다.
+     * API 키가 없거나 오류 발생 시 대체 로직��� 사용합니다.
      */
     private String analyzeSentiment(String content) {
+        // OpenAiService가 초기화되지 않았으면 대체 로직 실행
+        if (openAiService == null) {
+            return analyzeSentimentFallback(content);
+        }
+
+        try {
+            String prompt = String.format(
+                "다음 상담 내용은 긍정, 부정, 중립 중 어떤 감정에 해당하나요? 답변은 '긍정', '부정', '중립' 중 하나로만 해주세요.\n\n내용: %s\n\n감정:",
+                content
+            );
+
+            CompletionRequest completionRequest = CompletionRequest.builder()
+                    .model("gpt-3.5-turbo-instruct")
+                    .prompt(prompt)
+                    .maxTokens(10)
+                    .temperature(0.0)
+                    .build();
+
+            String sentiment = openAiService.createCompletion(completionRequest).getChoices().get(0).getText().trim();
+
+            // AI의 답변이 예상과 다를 경우 기본값 처리
+            if (Set.of("긍정", "부정", "중립").contains(sentiment)) {
+                return sentiment;
+            }
+            return "중립";
+
+        } catch (Exception e) {
+            // API 호출 중 에러 발생 시 로그를 남기고 대체 로직 실행
+            System.err.println("OpenAI API 호출 중 오류 발생: " + e.getMessage());
+            return analyzeSentimentFallback(content);
+        }
+    }
+
+    /**
+     * API 호출 실패 시 대체할 간단한 감정 분석 로직
+     */
+    private String analyzeSentimentFallback(String content) {
         int positiveScore = 0;
         int negativeScore = 0;
 
