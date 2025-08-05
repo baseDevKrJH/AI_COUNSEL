@@ -1,15 +1,12 @@
 package org.aitest.ai_counsel.exception;
 
-/**
- * 분석 처리 중 발생하는 예외
- */
-public class AnalysisException extends RuntimeException {
+public class AnalysisException extends BusinessException {
 
     public AnalysisException(String message) {
-        super(message);
+        super(message, ErrorCode.ANALYSIS_ERROR);
     }
 
-    public AnalysisException(String message, Throwable cause) {
-        super(message, cause);
+    public AnalysisException(ErrorCode errorCode) {
+        super(errorCode);
     }
 }
