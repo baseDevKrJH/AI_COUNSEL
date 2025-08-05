@@ -1,15 +1,12 @@
 package org.aitest.ai_counsel.exception;
 
-/**
- * 잘못된 요청 데이터로 인해 발생하는 예외
- */
-public class InvalidRequestException extends RuntimeException {
+public class InvalidRequestException extends BusinessException {
 
     public InvalidRequestException(String message) {
-        super(message);
+        super(message, ErrorCode.INVALID_INPUT_VALUE);
     }
 
-    public InvalidRequestException(String message, Throwable cause) {
-        super(message, cause);
+    public InvalidRequestException(ErrorCode errorCode) {
+        super(errorCode);
     }
 }
